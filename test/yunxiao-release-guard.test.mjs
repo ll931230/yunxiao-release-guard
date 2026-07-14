@@ -16,7 +16,9 @@ test('主分支未合入发布分支时退出 1 并列出缺失提交', (t) => {
   });
 
   assert.equal(result.status, 1);
+  assert.match(result.stdout, /\[STEP 4\/4\]/);
   assert.match(result.stdout, /已自动识别主分支: main/);
+  assert.match(result.stderr, /\[BLOCKED\]/);
   assert.match(result.stderr, /当前部署分支未包含 origin\/main/);
   assert.match(result.stderr, /release\/0707 merged to main/);
 });
@@ -28,6 +30,7 @@ test('主分支已合入发布分支时退出 0', (t) => {
   });
 
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /\[PASS\]/);
   assert.match(result.stdout, /检查通过：当前部署分支已包含 origin\/main/);
 });
 

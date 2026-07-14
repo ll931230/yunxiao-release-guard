@@ -1,6 +1,6 @@
 {
   "name": "yunxiao-release-guard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Guard Yunxiao releases by checking that the current branch contains the latest base branch.",
   "type": "module",
   "bin": {
