@@ -1,0 +1,31 @@
+{
+  "name": "yunxiao-release-guard",
+  "version": "0.1.0",
+  "description": "Guard Yunxiao production releases by checking that the current branch contains the previous production branch.",
+  "type": "module",
+  "bin": {
+    "yunxiao-release-guard": "bin/yunxiao-release-guard.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "node bin/yunxiao-release-guard.mjs --help && npm pack --dry-run --registry=https://registry.npmjs.org/"
+  },
+  "keywords": [
+    "yunxiao",
+    "release",
+    "ci",
+    "git"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
