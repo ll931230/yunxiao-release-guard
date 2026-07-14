@@ -1,71 +1,82 @@
 # yunxiao-release-guard
 
-云效生产发布分支保护 CLI。
+云效测试、生产流水线发布分支保护 CLI。
 
-它用于生产流水线发布前检查：
-
-```text
-当前部署分支必须包含上一条成功生产部署分支。
-```
-
-典型场景：
+它用于发布前检查：
 
 ```text
-release/0707 已上线
-release/0720 准备上线
-测试环境已经跑到 release/0730
+当前部署分支必须包含主分支的最新提交。
 ```
 
-这时生产流水线应检查 `release/0720` 是否包含 `release/0707`，而不是从测试环境反推上线分支。
+例如 `release/0707` 上线并合入 `main` 后，准备发布 `release/0720` 时，必须先把最新 `main` 合入 `release/0720`。如果漏掉这一步，CLI 会退出并阻断流水线。
 
-## 使用方式
+## 流水线直接执行
 
-在云效生产流水线构建命令最前面添加：
+推荐在云效 Node.js 构建命令中通过固定版本临时执行，不需要把 CLI 添加到项目依赖：
 
 ```bash
-npx -y yunxiao-release-guard@latest
+set -e
+
+npm config set registry http://your-npm-registry.example.com/repository/npm_group/
+npx -y yunxiao-release-guard@0.2.0
+
+pnpm install --ignore-scripts
+pnpm run build
 ```
 
-需要在流水线变量或通用变量组里配置一次：
+如果希望统一使用 pnpm：
 
 ```bash
-YUNXIAO_ACCESS_TOKEN=pt-xxxx
+pnpm dlx yunxiao-release-guard@0.2.0
 ```
 
-`YUNXIAO_ORGANIZATION_ID` 默认使用 `62650a04c2b7347ce520e7e4`。`PIPELINE_ID` 和 `CI_COMMIT_REF_NAME` 是云效运行时环境变量，通常不需要手动传参。
-
-如果不想自动查询上一条生产分支，也可以手动指定：
-
-```bash
-npx -y yunxiao-release-guard@latest \
-  --current-branch="$CI_COMMIT_REF_NAME" \
-  --previous-branch="release/0707"
-```
+建议固定 CLI 版本，不要在生产流水线中使用 `@latest`，避免工具升级后未经确认就影响所有项目。
 
 ## 判断逻辑
 
-自动模式：
+CLI 会：
 
-1. 读取当前流水线 ID：`PIPELINE_ID`。
-2. 查询当前流水线最近一次 `SUCCESS` 运行。
-3. 从运行详情里读取 `CI_COMMIT_REF_NAME`，得到上一条生产部署分支。
-4. 执行 `git merge-base --is-ancestor origin/<上一生产分支> HEAD`。
-5. 不包含则退出码为 `1`，阻断流水线。
+1. 从 `PROJECT_DIR` 或当前目录定位流水线下载的 Git 仓库。
+2. 读取 `CI_COMMIT_REF_NAME` 展示当前部署分支；实际判断对象始终是当前 `HEAD`。
+3. 如果仓库是浅克隆，先通过远端获取完整历史。
+4. 默认通过 `origin/HEAD` 自动识别 `main` 或 `master`，也可以通过参数明确指定主分支。
+5. fetch 指定主分支的最新提交。
+6. 执行 `git merge-base --is-ancestor origin/<主分支> HEAD`。
+7. 如果主分支不是当前 `HEAD` 的祖先，列出缺少的主分支提交并以退出码 `1` 阻断流水线。
 
-## 常用参数
+脚本不查询云效流水线历史，因此不需要云效 OpenAPI、`YUNXIAO_ACCESS_TOKEN` 或 MCP。执行 `git fetch` 使用的是流水线代码源本身配置的 Git 服务连接。
+
+## 参数
 
 ```text
---organization-id=xxx      云效组织 ID，也可用 YUNXIAO_ORGANIZATION_ID，默认 62650a04c2b7347ce520e7e4
---pipeline-id=xxx          当前云效流水线 ID，也可用 PIPELINE_ID
---current-branch=xxx       当前部署分支，也可用 CI_COMMIT_REF_NAME
---previous-branch=xxx      手动指定上一生产分支；指定后不调用云效接口
---skip-same-branch=false   上一生产分支与当前分支相同也继续检查，默认 false
---debug                    输出调试日志
---help                     查看帮助
+--base-branch=main       必须被当前部署分支包含的主分支，默认从 origin/HEAD 自动识别
+--remote=origin          Git 远端名称，默认 origin
+--repository=/path      Git 代码目录，默认 PROJECT_DIR 或当前目录
+--current-branch=name   当前分支名称，仅用于日志展示
+--help                  查看帮助
 ```
 
-## 注意
+参数也可以通过环境变量配置：
 
-- Git 只能判断分支包含关系，不知道哪个分支上过生产；上一生产分支必须来自云效流水线历史或手动传入。
-- 自动模式依赖 `npx -y alibabacloud-devops-mcp-server` 查询云效接口。
-- 脚本不会读取或输出 `YUNXIAO_ACCESS_TOKEN`。
+```text
+RELEASE_GUARD_BASE_BRANCH
+RELEASE_GUARD_REMOTE
+RELEASE_GUARD_REPOSITORY
+```
+
+`PROJECT_DIR` 和 `CI_COMMIT_REF_NAME` 是云效内置环境变量，通常不需要手动配置。
+
+## 退出码
+
+```text
+0  当前部署提交已包含主分支，可以继续构建和发布
+1  当前部署提交未包含主分支，阻断流水线
+2  参数、Git、网络、权限或仓库状态异常
+```
+
+## 云效代码源建议
+
+- Node.js 构建任务需要下载当前项目的代码源。
+- 代码源克隆深度建议设置为 `0`（完整历史）。CLI 可以处理浅克隆，但需要构建环境保留 Git 远端读取权限。
+- 多代码源流水线可以通过 `--repository` 指定需要检查的代码目录。
+- CLI 默认从 `origin/HEAD` 自动识别 `main` 或 `master`；也可以显式传入 `--base-branch=main` 或 `--base-branch=master`。
