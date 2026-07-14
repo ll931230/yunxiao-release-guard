@@ -3,7 +3,14 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
-// 所有输出均使用纯文本标识，不依赖 ANSI 颜色，确保云效日志下载后仍然清晰可读。
+// 云效构建日志支持 ANSI 颜色。这里直接使用标准转义码，不引入 chalk 等生产依赖。
+// CI 的 stdout/stderr 通常不是 TTY，因此默认始终启用；若日志平台不支持颜色，可设置 NO_COLOR=1 关闭。
+const ANSI = Object.freeze({
+  greenBold: '\x1b[1;32m',
+  redBold: '\x1b[1;31m',
+  reset: '\x1b[0m',
+});
+const COLOR_ENABLED = process.env.NO_COLOR === undefined;
 const LOG_SEPARATOR = '='.repeat(72);
 const TOTAL_STEPS = 4;
 const DEFAULT_REMOTE = 'origin';
@@ -407,13 +414,13 @@ function printMissingCommits(baseRef, options, gitOptions) {
     `检查失败：当前部署分支未包含 ${options.remote}/${options.baseBranch}，流水线已阻断。`,
     console.error,
   );
-  console.error(`[MISSING] 缺少主分支提交 ${missingCount} 个：`);
-  console.error(missing || '[MISSING] 无法列出缺失提交');
+  printFailure(`[MISSING] 缺少主分支提交 ${missingCount} 个：`);
+  printFailure(missing || '[MISSING] 无法列出缺失提交');
   if (missingCount > MAX_MISSING_COMMITS) {
-    console.error(`[MISSING] 仅展示前 ${MAX_MISSING_COMMITS} 个缺失提交。`);
+    printFailure(`[MISSING] 仅展示前 ${MAX_MISSING_COMMITS} 个缺失提交。`);
   }
   console.error('');
-  console.error(`[ACTION] 请先将 ${options.baseBranch} 合入当前部署分支，再重新执行流水线。`);
+  printFailure(`[ACTION] 请先将 ${options.baseBranch} 合入当前部署分支，再重新执行流水线。`);
 }
 
 /**
@@ -458,8 +465,8 @@ function printHeader() {
 
 function printStep(index, message) {
   console.log('');
-  console.log(`[STEP ${index}/${TOTAL_STEPS}] ${message}`);
-  console.log('-'.repeat(72));
+  console.log(colorize(ANSI.greenBold, `[STEP ${index}/${TOTAL_STEPS}] ${message}`));
+  console.log(colorize(ANSI.greenBold, '-'.repeat(72)));
 }
 
 function printInfo(message) {
@@ -467,10 +474,33 @@ function printInfo(message) {
 }
 
 function printOutcome(status, message, output = console.log) {
+  const style = status === 'PASS'
+    ? ANSI.greenBold
+    : ['BLOCKED', 'ERROR'].includes(status)
+      ? ANSI.redBold
+      : '';
+
   output('');
-  output(LOG_SEPARATOR);
-  output(`[${status}] ${message}`);
-  output(LOG_SEPARATOR);
+  output(colorize(style, LOG_SEPARATOR));
+  output(colorize(style, `[${status}] ${message}`));
+  output(colorize(style, LOG_SEPARATOR));
+}
+
+/**
+ * 失败原因、缺失提交和处理建议统一使用红色加粗，方便在长流水线日志中快速定位。
+ */
+function printFailure(message) {
+  console.error(colorize(ANSI.redBold, message));
+}
+
+/**
+ * ANSI 样式只包裹当前行，并立即 reset，避免污染云效后续构建命令的日志颜色。
+ */
+function colorize(style, message) {
+  if (!COLOR_ENABLED || !style) {
+    return message;
+  }
+  return `${style}${message}${ANSI.reset}`;
 }
 
 function printHelp() {
@@ -496,6 +526,7 @@ Env:
   RELEASE_GUARD_REPOSITORY   Git 代码目录
   PROJECT_DIR                云效流水线代码目录
   CI_COMMIT_REF_NAME         云效当前运行分支，仅用于日志展示
+  NO_COLOR                   设置后关闭 ANSI 彩色日志
 
 Exit codes:
   0  当前部署提交已包含主分支
@@ -508,6 +539,6 @@ try {
   main();
 } catch (error) {
   printOutcome('ERROR', '检查执行异常，流水线已阻断。', console.error);
-  console.error(`[DETAIL] ${error instanceof Error ? error.message : String(error)}`);
+  printFailure(`[DETAIL] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 2;
 }

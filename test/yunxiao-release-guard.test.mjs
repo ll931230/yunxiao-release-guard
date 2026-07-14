@@ -16,8 +16,12 @@ test('主分支未合入发布分支时退出 1 并列出缺失提交', (t) => {
   });
 
   assert.equal(result.status, 1);
+  assert.match(result.stdout, /\x1b\[1;32m\[STEP 4\/4\]/);
   assert.match(result.stdout, /\[STEP 4\/4\]/);
   assert.match(result.stdout, /已自动识别主分支: main/);
+  assert.match(result.stderr, /\x1b\[1;31m\[BLOCKED\]/);
+  assert.match(result.stderr, /\x1b\[1;31m\[MISSING\]/);
+  assert.match(result.stderr, /\x1b\[1;31m\[ACTION\]/);
   assert.match(result.stderr, /\[BLOCKED\]/);
   assert.match(result.stderr, /当前部署分支未包含 origin\/main/);
   assert.match(result.stderr, /release\/0707 merged to main/);
@@ -153,6 +157,19 @@ test('支持通过 PROJECT_DIR 从其他工作目录定位仓库', (t) => {
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('设置 NO_COLOR 时输出纯文本日志', (t) => {
+  const scenario = createScenario(t, { baseBranch: 'main', mergeBaseIntoRelease: false });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+    NO_COLOR: '1',
+  });
+
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stdout, /\x1b\[/);
+  assert.doesNotMatch(result.stderr, /\x1b\[/);
+  assert.match(result.stderr, /\[BLOCKED\]/);
+});
+
 function createScenario(t, {
   baseBranch,
   mergeBaseIntoRelease,
@@ -235,10 +252,14 @@ function createScenario(t, {
 }
 
 function runCli(cwd, env = {}) {
+  // 测试结果不应受执行测试的终端是否预设 NO_COLOR 影响；需要关闭颜色的用例会自行传入。
+  const inheritedEnv = { ...process.env };
+  delete inheritedEnv.NO_COLOR;
+
   return spawnSync(process.execPath, [cliPath], {
     cwd,
     env: {
-      ...process.env,
+      ...inheritedEnv,
       PROJECT_DIR: '',
       RELEASE_GUARD_BASE_BRANCH: '',
       RELEASE_GUARD_REMOTE: '',

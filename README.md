@@ -26,7 +26,7 @@
 set -e
 
 npm config set registry http://your-npm-registry.example.com/repository/npm_group/
-npx -y yunxiao-release-guard@0.3.1
+npx -y yunxiao-release-guard@0.5.0
 
 pnpm install --ignore-scripts
 pnpm run build
@@ -35,7 +35,7 @@ pnpm run build
 如果希望统一使用 pnpm：
 
 ```bash
-pnpm dlx yunxiao-release-guard@0.3.1
+pnpm dlx yunxiao-release-guard@0.5.0
 ```
 
 建议固定 CLI 版本，不要在生产流水线中使用 `@latest`，避免工具升级后未经确认就影响所有项目。
@@ -57,7 +57,12 @@ CLI 会：
 
 ## 流水线日志
 
-关键阶段会使用步骤编号和醒目标识输出，便于从较长的云效构建日志中快速定位：
+关键阶段会使用步骤编号、醒目标识和 ANSI 颜色输出，便于从较长的云效构建日志中快速定位：
+
+- `[STEP]` 和 `[PASS]`：绿色加粗；
+- `[BLOCKED]`、`[MISSING]`、缺失提交明细、`[ACTION]`、`[ERROR]`：红色加粗。
+
+颜色默认在 CI 环境中启用，不依赖 TTY 检测。若日志采集平台不支持 ANSI 颜色，可以设置 `NO_COLOR=1` 恢复纯文本输出。
 
 ```text
 ========================================================================
