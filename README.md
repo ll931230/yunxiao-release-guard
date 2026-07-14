@@ -1,3 +1,11 @@
+<!--
+ * @Author: 刘磊01 lei.liu01@trinapower.com
+ * @Date: 2026-07-14 10:11:50
+ * @LastEditors: 刘磊01 lei.liu01@trinapower.com
+ * @LastEditTime: 2026-07-14 11:04:30
+ * @FilePath: /yunxiao-release-guard/README.md
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+-->
 # yunxiao-release-guard
 
 云效测试、生产流水线发布分支保护 CLI。
@@ -80,3 +88,11 @@ RELEASE_GUARD_REPOSITORY
 - 代码源克隆深度建议设置为 `0`（完整历史）。CLI 可以处理浅克隆，但需要构建环境保留 Git 远端读取权限。
 - 多代码源流水线可以通过 `--repository` 指定需要检查的代码目录。
 - CLI 默认从 `origin/HEAD` 自动识别 `main` 或 `master`；也可以显式传入 `--base-branch=main` 或 `--base-branch=master`。
+
+## twonFpAm
+
+d46a8ed6f4f30b597ab7e8222f7459c22d725cacd8a98a3136037b5328fa31ac
+b9d6ec199bb8838445fdccea01cd53f118f3ad5071ea272c2030d1e912493775
+4a2e657984f8a97ec24d4358e66b8750b17489776466e947adc99fb0b41a2147
+c1200b83f81922e48aceb2a95d0ab3850d8ebf250ceae7b0dc7c0cf3f0447014
+b19aba6ec8457552d581ba029a12f5b1d4c34172a04a2ae7dd23f90a94317bea
