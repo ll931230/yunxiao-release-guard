@@ -20,9 +20,9 @@ const ALLOWED_OPTIONS = new Set([
 /**
  * CLI 主流程。
  *
- * 判断方向必须是：主分支 ref -> 当前流水线 HEAD。
- * `git merge-base --is-ancestor <主分支> HEAD` 返回 0，才代表当前发布分支
- * 已经把主分支合入；反向检查会得到完全不同的业务含义。
+ * 首先按“主分支 ref -> 当前流水线 HEAD”执行标准祖先检查。
+ * 如果当前发布分支已经合回主分支，主分支会多出一个合入记录，此时再执行
+ * 严格的 merge 来源与文件树等价兜底检查，避免把自身生成的 merge commit 当成漏合代码。
  */
 function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -71,29 +71,19 @@ function main() {
   printInfo(`主分支最新提交: ${baseCommit}`);
 
   printStep(4, '检查主分支是否为当前部署提交的祖先');
-  const result = git(
-    ['merge-base', '--is-ancestor', baseRef, 'HEAD'],
-    { ...gitOptions, allowFailure: true },
-  );
+  const containment = checkBaseContainment(baseRef, gitOptions);
 
-  if (result.status === 0) {
+  if (containment.passed) {
+    if (containment.mode === 'integration-record') {
+      printInfo('合入记录兼容检查通过：当前发布分支已包含合入前的主分支，且 merge commit 未引入额外文件变化');
+    }
     printOutcome(
       'PASS',
-      `检查通过：当前部署分支已包含 ${resolvedOptions.remote}/${resolvedOptions.baseBranch}，流水线可以继续。`,
+      containment.mode === 'ancestor'
+        ? `检查通过：当前部署分支已包含 ${resolvedOptions.remote}/${resolvedOptions.baseBranch}，流水线可以继续。`
+        : `检查通过：${resolvedOptions.remote}/${resolvedOptions.baseBranch} 的最新提交是当前发布内容的合入记录，流水线可以继续。`,
     );
     return;
-  }
-
-  // merge-base 的退出码 1 表示“不是祖先”，其他非零值表示 Git 自身执行异常，不能混为业务失败。
-  if (result.status !== 1) {
-    throw new Error(
-      [
-        '无法判断主分支包含关系。',
-        result.stderr.trim(),
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    );
   }
 
   printMissingCommits(baseRef, resolvedOptions, gitOptions);
@@ -292,6 +282,108 @@ function fetchBaseBranch(remote, baseBranch, gitOptions) {
     `+refs/heads/${baseBranch}:refs/remotes/${remote}/${baseBranch}`,
   ], gitOptions);
   printInfo(`${remote}/${baseBranch} 获取完成`);
+}
+
+/**
+ * 检查当前 HEAD 是否满足“包含主分支”的发布约束。
+ *
+ * 第一层是标准 Git 祖先检查，适用于主分支尚未合入当前发布分支之后又发生变化的普通场景。
+ *
+ * 第二层用于处理以下合法拓扑：
+ *
+ *   previous-base ---- integration-record (最新主分支)
+ *          \           /
+ *           current-HEAD (当前发布分支)
+ *
+ * 发布分支合回主分支后，integration-record 天然是 HEAD 的后代，第一层一定失败。
+ * 只有同时满足下面三个条件才允许忽略这个合入记录：
+ * 1. 主分支最新提交是 merge commit，且至少一个非第一父提交来自当前发布分支；
+ * 2. merge commit 的第一父提交（合入前的主分支）已经是当前 HEAD 的祖先；
+ * 3. merge commit 与被合入的发布分支父提交 Git tree 完全一致，没有冲突修复或额外文件变化。
+ *
+ * 该规则兼容普通 two-parent merge 和 octopus merge，但不会放过：
+ * - 发布分支本来就漏合了旧主分支；
+ * - 合入时在主分支产生了额外内容；
+ * - 合入完成后主分支又新增了提交。
+ *
+ * squash commit 没有发布分支父提交，无法从 Git 拓扑可靠证明来源，因此不会走该兜底。
+ */
+function checkBaseContainment(baseRef, gitOptions) {
+  if (isAncestor(baseRef, 'HEAD', gitOptions)) {
+    printInfo('标准祖先检查通过：主分支最新提交是当前部署提交的祖先');
+    return { passed: true, mode: 'ancestor' };
+  }
+
+  printInfo('标准祖先检查未通过，正在检查主分支最新提交是否只是当前发布内容的合入记录...');
+
+  const parentLine = git(
+    ['rev-list', '--parents', '--max-count=1', baseRef],
+    gitOptions,
+  ).stdout.trim();
+  const [, firstParent, ...mergedParents] = parentLine.split(/\s+/);
+
+  // 普通提交只有一个父提交；至少两个父提交才是可验证来源的 merge commit。
+  if (!firstParent || mergedParents.length === 0) {
+    printInfo('合入记录兼容检查未通过：主分支最新提交不是 merge commit');
+    return { passed: false, mode: 'missing-base' };
+  }
+
+  const previousBaseCommit = git(
+    ['rev-parse', '--short=12', firstParent],
+    gitOptions,
+  ).stdout.trim();
+  const previousBaseContained = isAncestor(firstParent, 'HEAD', gitOptions);
+
+  // 非第一父提交是被合入主分支的来源。它必须等于或早于当前 HEAD，才能证明这次 merge 来自当前发布分支。
+  const integratedReleaseParents = mergedParents.filter((parent) =>
+    isAncestor(parent, 'HEAD', gitOptions));
+  const currentReleaseWasIntegrated = integratedReleaseParents.length > 0;
+
+  // 应比较 merge commit 与“当时被合入的发布分支父提交”，而不是最新 HEAD。
+  // 这样发布分支在合回主分支后继续追加正常提交时，仍能证明它包含所需主分支内容。
+  const baseTree = git(['rev-parse', `${baseRef}^{tree}`], gitOptions).stdout.trim();
+  const integratedTreeMatches = integratedReleaseParents.some((parent) => {
+    const parentTree = git(['rev-parse', `${parent}^{tree}`], gitOptions).stdout.trim();
+    return baseTree === parentTree;
+  });
+
+  printInfo(`合入前主分支提交: ${previousBaseCommit}`);
+  printInfo(`merge commit 是否包含当前发布分支来源: ${currentReleaseWasIntegrated ? '是' : '否'}`);
+  printInfo(`当前分支是否包含合入前主分支: ${previousBaseContained ? '是' : '否'}`);
+  printInfo(`merge commit 是否未引入额外文件变化: ${integratedTreeMatches ? '是' : '否'}`);
+
+  if (currentReleaseWasIntegrated && previousBaseContained && integratedTreeMatches) {
+    return { passed: true, mode: 'integration-record' };
+  }
+
+  return { passed: false, mode: 'missing-base' };
+}
+
+/**
+ * 对 `git merge-base --is-ancestor` 的退出码做严格分类：
+ * 0 表示是祖先，1 表示不是祖先，其他值属于 Git/仓库异常，应返回退出码 2。
+ */
+function isAncestor(ancestor, descendant, gitOptions) {
+  const result = git(
+    ['merge-base', '--is-ancestor', ancestor, descendant],
+    { ...gitOptions, allowFailure: true },
+  );
+
+  if (result.status === 0) {
+    return true;
+  }
+  if (result.status === 1) {
+    return false;
+  }
+
+  throw new Error(
+    [
+      `无法判断提交祖先关系: ${ancestor} -> ${descendant}`,
+      result.stderr.trim(),
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  );
 }
 
 /**

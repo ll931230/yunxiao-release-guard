@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -34,6 +34,99 @@ test('主分支已合入发布分支时退出 0', (t) => {
   assert.match(result.stdout, /检查通过：当前部署分支已包含 origin\/main/);
 });
 
+test('当前发布分支已经合回主分支且仅新增合入记录时退出 0', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'master',
+    mergeBaseIntoRelease: true,
+    integrateReleaseIntoBase: 'merge',
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /标准祖先检查未通过/);
+  assert.match(result.stdout, /合入记录兼容检查通过/);
+  assert.match(result.stdout, /最新提交是当前发布内容的合入记录/);
+});
+
+test('squash 合回主分支因缺少可验证的发布分支父提交而阻断', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'main',
+    mergeBaseIntoRelease: true,
+    integrateReleaseIntoBase: 'squash',
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /主分支最新提交不是 merge commit/);
+  assert.match(result.stderr, /\[BLOCKED\]/);
+});
+
+test('发布分支漏合旧主分支后再合回主分支仍然阻断', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'main',
+    mergeBaseIntoRelease: false,
+    integrateReleaseIntoBase: 'merge',
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /当前分支是否包含合入前主分支: 否/);
+  assert.match(result.stderr, /\[BLOCKED\]/);
+});
+
+test('合回主分支时产生额外文件变化仍然阻断', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'main',
+    mergeBaseIntoRelease: true,
+    integrateReleaseIntoBase: 'merge-with-extra-change',
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /merge commit 是否未引入额外文件变化: 否/);
+  assert.match(result.stderr, /\[BLOCKED\]/);
+});
+
+test('发布分支合回主分支后继续追加发布提交时仍然通过', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'main',
+    mergeBaseIntoRelease: true,
+    integrateReleaseIntoBase: 'merge',
+    addReleaseCommitAfterIntegration: true,
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /merge commit 是否未引入额外文件变化: 是/);
+  assert.match(result.stdout, /\[PASS\]/);
+});
+
+test('发布分支合回主分支后主分支又有新提交时仍然阻断', (t) => {
+  const scenario = createScenario(t, {
+    baseBranch: 'main',
+    mergeBaseIntoRelease: true,
+    integrateReleaseIntoBase: 'merge',
+    addBaseCommitAfterIntegration: true,
+  });
+  const result = runCli(scenario.ciDirectory, {
+    CI_COMMIT_REF_NAME: 'release/0720',
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /主分支最新提交不是 merge commit/);
+  assert.match(result.stderr, /base changed after integration/);
+});
+
 test('自动识别 master 并处理浅克隆', (t) => {
   const scenario = createScenario(t, {
     baseBranch: 'master',
@@ -60,7 +153,14 @@ test('支持通过 PROJECT_DIR 从其他工作目录定位仓库', (t) => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-function createScenario(t, { baseBranch, mergeBaseIntoRelease, shallow = false }) {
+function createScenario(t, {
+  baseBranch,
+  mergeBaseIntoRelease,
+  integrateReleaseIntoBase = '',
+  addBaseCommitAfterIntegration = false,
+  addReleaseCommitAfterIntegration = false,
+  shallow = false,
+}) {
   const root = mkdtempSync(join(tmpdir(), 'yunxiao-release-guard-'));
   const remote = join(root, 'remote.git');
   const seed = join(root, 'seed');
@@ -86,6 +186,41 @@ function createScenario(t, { baseBranch, mergeBaseIntoRelease, shallow = false }
   if (mergeBaseIntoRelease) {
     runGit(seed, ['checkout', 'release/0720']);
     runGit(seed, ['merge', '--no-ff', baseBranch, '-m', `${baseBranch} merged into release/0720`]);
+    runGit(seed, ['push']);
+  }
+
+  if (integrateReleaseIntoBase) {
+    runGit(seed, ['checkout', baseBranch]);
+
+    if (integrateReleaseIntoBase === 'squash') {
+      runGit(seed, ['merge', '--squash', 'release/0720']);
+      runGit(seed, ['commit', '--allow-empty', '-m', 'squash release/0720 into base']);
+    } else {
+      runGit(seed, ['merge', '--no-ff', '--no-commit', 'release/0720']);
+
+      if (integrateReleaseIntoBase === 'merge-with-extra-change') {
+        writeFileSync(join(seed, 'merge-only-change.txt'), 'created while merging into base\n');
+        runGit(seed, ['add', 'merge-only-change.txt']);
+      }
+
+      runGit(seed, ['commit', '-m', 'merge release/0720 into base']);
+    }
+
+    runGit(seed, ['push']);
+  }
+
+  if (addBaseCommitAfterIntegration) {
+    writeFileSync(join(seed, 'base-after-integration.txt'), 'new base content\n');
+    runGit(seed, ['add', 'base-after-integration.txt']);
+    runGit(seed, ['commit', '-m', 'base changed after integration']);
+    runGit(seed, ['push']);
+  }
+
+  if (addReleaseCommitAfterIntegration) {
+    runGit(seed, ['checkout', 'release/0720']);
+    writeFileSync(join(seed, 'release-after-integration.txt'), 'new release content\n');
+    runGit(seed, ['add', 'release-after-integration.txt']);
+    runGit(seed, ['commit', '-m', 'release changed after integration']);
     runGit(seed, ['push']);
   }
 

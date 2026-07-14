@@ -26,7 +26,7 @@
 set -e
 
 npm config set registry http://your-npm-registry.example.com/repository/npm_group/
-npx -y yunxiao-release-guard@0.2.0
+npx -y yunxiao-release-guard@0.3.1
 
 pnpm install --ignore-scripts
 pnpm run build
@@ -35,7 +35,7 @@ pnpm run build
 如果希望统一使用 pnpm：
 
 ```bash
-pnpm dlx yunxiao-release-guard@0.2.0
+pnpm dlx yunxiao-release-guard@0.3.1
 ```
 
 建议固定 CLI 版本，不要在生产流水线中使用 `@latest`，避免工具升级后未经确认就影响所有项目。
@@ -50,7 +50,8 @@ CLI 会：
 4. 默认通过 `origin/HEAD` 自动识别 `main` 或 `master`，也可以通过参数明确指定主分支。
 5. fetch 指定主分支的最新提交。
 6. 执行 `git merge-base --is-ancestor origin/<主分支> HEAD`。
-7. 如果主分支不是当前 `HEAD` 的祖先，列出缺少的主分支提交并以退出码 `1` 阻断流水线。
+7. 如果标准检查失败，再识别主分支最新提交是否只是“当前发布分支合回主分支”生成的 merge commit；只有 merge 来源包含当前发布分支、合入前主分支已被当前分支包含，并且 merge commit 未引入额外文件变化时才放行。
+8. 其他情况列出缺少的主分支提交并以退出码 `1` 阻断流水线。
 
 脚本不查询云效流水线历史，因此不需要云效 OpenAPI、`YUNXIAO_ACCESS_TOKEN` 或 MCP。执行 `git fetch` 使用的是流水线代码源本身配置的 Git 服务连接。
 
@@ -74,6 +75,18 @@ CLI 会：
 ```
 
 失败时使用 `[BLOCKED]` 展示未合入主分支的业务阻断，使用 `[ERROR]` 展示网络、权限、Git 或参数异常，并通过 `[ACTION]` 给出下一步处理建议。
+
+### 当前发布分支已经合回主分支
+
+如果 `release/202607` 已经合入 `master`，`master` 会比发布分支多一个 merge commit。CLI 不会仅因为这个合入记录阻断流水线，而是继续验证：
+
+- merge commit 的非第一父提交来自当前发布分支；
+- `master` 合入前的第一父提交已经包含在 `release/202607` 中；
+- merge commit 与当时被合入的 `release/202607` 父提交文件树完全一致。
+
+三项都满足时说明只多了一个不改变发布内容的合入记录，检查通过。发布分支合回主分支后继续追加自己的发布提交也可以通过；如果发布分支漏合旧主分支、合入时产生额外冲突修复，或者主分支又有新提交，检查仍会阻断。
+
+> Squash merge 不保留发布分支父提交，CLI 无法仅凭 Git 拓扑可靠证明其来源，因此不会使用上述兼容逻辑，建议发布分支回合主分支时保留 merge commit。
 
 ## 参数
 
